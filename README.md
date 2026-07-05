@@ -31,7 +31,7 @@ Modern API and AI-agent workflows are fragmented across API docs, test scripts, 
 
 ## Use Cases & Code Recipes
 
-### 1. API Testing
+### 1. API Workflow Testing
 
 Define API behavior and expected results in the same contract.
 
@@ -206,7 +206,7 @@ evidence:
 
 Open Contract Spec is being implemented in **SuperContracts from [apilabs.ai](https://apilabs.ai)**.
 
-SuperContracts turns open contracts into executable API, MCP, and AI-agent workflows with runtime guardrails, approvals, testing, and evidence capture.
+SuperContracts turns open contracts into executable API, MCP, and AI-agent workflows with runtime guardrails, approvals, testing, and evidence capture. Further, SuperContracts is deeply integrated via MCP in AI IDE tools like Cursor.
 
 ---
 
