@@ -1,4 +1,4 @@
-# Open Contract Spec
+# SuperContracts from apilabs.ai - Open Contract Spec
 
 **An open executable contract format for APIs, MCP tools, AI agents, workflows, approvals, tests, and guardrails.**
 
