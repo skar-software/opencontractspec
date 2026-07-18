@@ -1,0 +1,542 @@
+# SuperContracts™ — executable contract for APIs, MCP tools, workflows, and AI agents.
+# Optimized for deterministic execution, least-privilege access, approvals, testing,
+# runtime evidence, observability, and IDE/MCP integration.
+
+supercontract:
+  spec_version: "1.0"
+  id: order-processing
+  version: "2.1.0"
+  kind: service
+  status: active
+  owner: fulfillment-platform
+  description: >-
+    Executable contract for creating and retrieving customer orders through APIs,
+    workflows, MCP tools, and approved AI agents.
+  tags: [orders, fulfillment, ecommerce]
+
+service:
+  name: Order Processing Service
+  protocol: https
+  default_environment: development
+  defaults:
+    timeout: 30s
+    content_type: application/json
+    auth: order_bearer
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENTS AND SECRETS
+# -----------------------------------------------------------------------------
+environments:
+  production:
+    base_url: https://api.fulfillment.io/v2
+    classification: production
+    writes: approval_required
+  staging:
+    base_url: https://staging-api.fulfillment.io/v2
+    classification: non_production
+    writes: allowed
+  development:
+    base_url: http://localhost:8080/v2
+    classification: non_production
+    writes: allowed
+    secure_tunnel: true
+
+security:
+  auth_schemes:
+    order_bearer:
+      type: http
+      scheme: bearer
+      token:
+        secret: order_token
+        header: Authorization
+        prefix: Bearer
+
+  secrets:
+    order_token:
+      provider: environment_aware
+      references:
+        production: aws-sm://orders/prod/access-token
+        staging: aws-sm://orders/staging/access-token
+        development: env://ORDER_TOKEN
+      never_log: true
+
+# -----------------------------------------------------------------------------
+# DOMAIN SCHEMAS
+# -----------------------------------------------------------------------------
+schemas:
+  OrderId:
+    type: string
+    pattern: '^ord_[A-Za-z0-9]{12}$'
+    description: Unique system identifier for an order.
+
+  Sku:
+    type: string
+    pattern: '^[A-Z]{3}-[A-Z]{3}-[0-9]{3}$'
+    minLength: 11
+    maxLength: 11
+    description: Stock keeping unit in format AAA-BBB-123.
+
+  Quantity:
+    type: integer
+    minimum: 1
+    maximum: 10
+
+  OrderStatus:
+    type: string
+    enum: [pending, processing, shipped, cancelled]
+
+  OrderCreate:
+    type: object
+    additionalProperties: false
+    required: [sku, quantity]
+    properties:
+      sku:
+        $ref: '#/schemas/Sku'
+      quantity:
+        $ref: '#/schemas/Quantity'
+
+  Order:
+    type: object
+    additionalProperties: false
+    required: [order_id, sku, quantity, status]
+    properties:
+      order_id:
+        $ref: '#/schemas/OrderId'
+      sku:
+        $ref: '#/schemas/Sku'
+      quantity:
+        $ref: '#/schemas/Quantity'
+      status:
+        $ref: '#/schemas/OrderStatus'
+
+  Error:
+    type: object
+    additionalProperties: false
+    required: [code, message, correlation_id]
+    properties:
+      code:
+        type: string
+        example: OUT_OF_STOCK
+      message:
+        type: string
+        example: Requested quantity exceeds available warehouse stock.
+      correlation_id:
+        type: string
+      details:
+        type: object
+        additionalProperties: true
+
+# -----------------------------------------------------------------------------
+# API OPERATIONS
+# -----------------------------------------------------------------------------
+operations:
+  place_order:
+    summary: Create a customer order.
+    method: POST
+    path: /orders
+    effect: write
+    risk: medium
+    auth: order_bearer
+    idempotency:
+      required: true
+      header: Idempotency-Key
+      ttl: 24h
+    request:
+      body:
+        required: true
+        schema:
+          $ref: '#/schemas/OrderCreate'
+    responses:
+      '201':
+        description: Order accepted for fulfillment.
+        schema:
+          $ref: '#/schemas/Order'
+      '400':
+        description: Invalid request or inventory constraint.
+        schema:
+          $ref: '#/schemas/Error'
+      '401':
+        description: Invalid or expired bearer token.
+        schema:
+          $ref: '#/schemas/Error'
+      '409':
+        description: Duplicate idempotency key or conflicting order.
+        schema:
+          $ref: '#/schemas/Error'
+    emits: [order_created]
+    policy_refs:
+      - production_write_approval
+      - order_write_rate_limit
+      - redact_sensitive_data
+      - capture_execution_evidence
+
+  get_order:
+    summary: Retrieve an order by ID.
+    method: GET
+    path: /orders/{order_id}
+    effect: read
+    risk: low
+    auth: order_bearer
+    parameters:
+      path:
+        order_id:
+          required: true
+          schema:
+            $ref: '#/schemas/OrderId'
+    responses:
+      '200':
+        description: Order found.
+        schema:
+          $ref: '#/schemas/Order'
+      '401':
+        description: Invalid or expired bearer token.
+        schema:
+          $ref: '#/schemas/Error'
+      '404':
+        description: Order not found.
+        schema:
+          $ref: '#/schemas/Error'
+    policy_refs:
+      - order_lookup_retry
+      - redact_sensitive_data
+      - capture_execution_evidence
+
+# -----------------------------------------------------------------------------
+# STATEFUL BUSINESS WORKFLOWS
+# -----------------------------------------------------------------------------
+workflows:
+  order_lifecycle:
+    description: Create an order, persist its identifier, and verify retrieval.
+    goal: Confirm that an accepted order is immediately available for tracking.
+    actor: customer
+    input_schema:
+      $ref: '#/schemas/OrderCreate'
+    rules:
+      - quantity must be between 1 and 10
+      - quantity must not exceed available inventory
+      - duplicate orders must be prevented through idempotency
+      - accepted orders must be retrievable after the configured retry policy
+    initial_state:
+      order_exists: false
+    success_state:
+      order_exists: true
+      order_status: pending
+    steps:
+      - id: submit_order
+        uses: operation.place_order
+        with:
+          body: $input
+          headers:
+            Idempotency-Key: $context.idempotency_key
+        capture:
+          order_id: $response.body.order_id
+          order_status: $response.body.status
+        assert:
+          status: 201
+          body.status: pending
+
+      - id: retrieve_order
+        uses: operation.get_order
+        with:
+          path.order_id: $state.order_id
+        retry:
+          policy: order_lookup_retry
+        assert:
+          status: 200
+          body.order_id: $state.order_id
+          body.sku: $input.sku
+          body.quantity: $input.quantity
+          body.status: pending
+        on_success: complete
+        on_failure:
+          emit: order_lookup_failed
+          action: escalate
+
+      - id: complete
+        type: success
+        set_state:
+          order_exists: true
+
+# -----------------------------------------------------------------------------
+# ENFORCEMENT POLICIES
+# -----------------------------------------------------------------------------
+policies:
+  defaults:
+    enforcement: block
+    deny_unlisted_operations: true
+    fail_closed: true
+
+  approvals:
+    production_write_approval:
+      description: Require human approval for production write operations.
+      match:
+        environments: [production]
+        effects: [write, destructive]
+      approval:
+        type: human
+        approver_groups: [fulfillment-operations]
+        timeout: 15m
+        on_timeout: reject
+      evidence:
+        capture: [requester, approver, decision, reason, timestamp]
+
+  retries:
+    order_lookup_retry:
+      description: Retry temporary order lookup failures caused by eventual consistency.
+      match:
+        operation: get_order
+        response_status: 404
+      max_attempts: 3
+      initial_delay: 1s
+      backoff: exponential
+      max_delay: 5s
+
+  rate_limits:
+    order_write_rate_limit:
+      match:
+        operation: place_order
+      limit: 10
+      window: 1m
+      key: $actor.id
+      on_exceed: block
+
+  redaction:
+    redact_sensitive_data:
+      request_paths:
+        - $request.headers.authorization
+        - $request.body.pii
+      response_paths:
+        - $response.body.pii
+      replacement: '[REDACTED]'
+
+  evidence:
+    capture_execution_evidence:
+      capture:
+        - actor
+        - environment
+        - operation
+        - request_metadata
+        - response_metadata
+        - policy_decisions
+        - approvals
+        - state_changes
+        - assertions
+        - retries
+        - timestamps
+        - execution_trace
+      exclude:
+        - secrets
+        - authorization_tokens
+        - hidden_model_reasoning
+
+# -----------------------------------------------------------------------------
+# AI AGENT AND SLACK GUARDRAILS
+# -----------------------------------------------------------------------------
+agents:
+  order_assistant:
+    description: Support agent that can create and track customer orders.
+    identity:
+      type: service_agent
+      principal: order-assistant
+    permissions:
+      allow:
+        operations: [place_order, get_order]
+        workflows: [order_lifecycle]
+        environments: [development, staging, production]
+      deny:
+        - unlisted_operations
+        - direct_database_access
+        - secret_access
+    production_access:
+      writes: approval_required
+      reads: allowed
+    constraints:
+      max_quantity: 10
+      max_actions_per_request: 1
+      require_idempotency_for_writes: true
+      prevent_duplicate_orders: true
+      require_post_write_verification: true
+    escalation:
+      when:
+        - approval_rejected
+        - retry_exhausted
+        - policy_blocked
+        - order_created_but_not_retrievable
+      destination: fulfillment-operations
+    instructions:
+      - Do not execute operations outside the explicit allowlist.
+      - Do not expose credentials, tokens, or customer PII.
+      - Verify every successful order creation by retrieving the order.
+
+    interfaces:
+      slack:
+        enabled: true
+        bot_handle: '@OrderBot'
+        allowed_channels: ['#support-ops', '#order-triage']
+        require_thread_context: true
+        require_actor_identity: true
+        max_actions_per_message: 1
+
+# -----------------------------------------------------------------------------
+# TESTS
+# -----------------------------------------------------------------------------
+tests:
+  fixtures:
+    valid_order:
+      sku: APP-YKM-992
+      quantity: 3
+
+  suites:
+    order_lifecycle_smoke:
+      type: workflow
+      target: order_lifecycle
+      environment: staging
+      input: $fixtures.valid_order
+      expect:
+        status: success
+        steps:
+          submit_order: 201
+          retrieve_order: 200
+        final_state:
+          order_exists: true
+          order_status: pending
+
+    reject_invalid_quantity:
+      type: operation
+      target: place_order
+      environment: staging
+      input:
+        sku: APP-YKM-992
+        quantity: 11
+      expect:
+        status: 400
+
+    require_production_approval:
+      type: policy
+      target: place_order
+      environment: production
+      expect:
+        decision: approval_required
+
+  generation:
+    enabled: true
+    sources: [schemas, operations, workflows, policies]
+    categories: [edge, negative, schema, security, workflow]
+    require_human_review: true
+
+# -----------------------------------------------------------------------------
+# EVENTS
+# -----------------------------------------------------------------------------
+events:
+  order_created:
+    when:
+      operation: place_order
+      response_status: 201
+    publish:
+      topic: orders.created
+      payload:
+        order_id: $response.body.order_id
+        status: $response.body.status
+        correlation_id: $context.correlation_id
+
+  order_lookup_failed:
+    when:
+      workflow: order_lifecycle
+      step: retrieve_order
+      condition: retry_exhausted
+    publish:
+      topic: orders.lookup.failed
+      payload:
+        order_id: $state.order_id
+        correlation_id: $context.correlation_id
+
+# -----------------------------------------------------------------------------
+# RUNTIME EVIDENCE AND OBSERVABILITY
+# -----------------------------------------------------------------------------
+runtime:
+  correlation_id:
+    generate: true
+    response_header: X-Correlation-ID
+
+  evidence:
+    directory: .supercontracts/runs/$run.id
+    outputs:
+      run: run.json
+      state: state.json
+      steps: steps.json
+      events: events.jsonl
+      io: io.json
+      ai_context: ai_context.md
+    retention:
+      production: 365d
+      non_production: 30d
+    integrity:
+      hash_artifacts: true
+      append_only_events: true
+
+  ai_context:
+    include:
+      - execution_summary
+      - policy_decisions
+      - approval_history
+      - failed_assertions
+      - retry_history
+      - final_state
+      - remediation_hint
+    exclude:
+      - hidden_model_reasoning
+      - secrets
+      - raw_authorization_headers
+
+# -----------------------------------------------------------------------------
+# MCP AND IDE INTEGRATIONS
+# -----------------------------------------------------------------------------
+integrations:
+  mcp:
+    server:
+      name: order-service-mcp
+      version: "1.0.0"
+    exposure: explicit
+    tools:
+      place_order:
+        uses: operation.place_order
+        risk: medium
+        approval_policy: production_write_approval
+      get_order:
+        uses: operation.get_order
+        risk: low
+      run_order_lifecycle:
+        uses: workflow.order_lifecycle
+        risk: medium
+    safety:
+      strict_mode: true
+      deny_unlisted_tools: true
+      validate_inputs: true
+      validate_outputs: true
+      enforce_agent_permissions: true
+      enforce_environment_policies: true
+
+  ide:
+    cursor:
+      enabled: true
+      discovery: true
+      execute: true
+      test: true
+      audit: true
+      evidence_path: .supercontracts/runs
+      expose_decision_summary: true
+      expose_hidden_model_reasoning: false
+
+# -----------------------------------------------------------------------------
+# OPTIONAL INFRASTRUCTURE REFERENCES
+# -----------------------------------------------------------------------------
+infrastructure:
+  references:
+    storage:
+      orders:
+        type: dynamodb
+        resource: orders
+    messaging:
+      fulfillment:
+        type: sqs
+        resource: order-processing
