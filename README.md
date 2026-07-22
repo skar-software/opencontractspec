@@ -1,7 +1,7 @@
 <p align="center">
   <img src="apilabs_ai_supercontracts.png"
        alt="apilabs.ai SuperContracts"
-       width="600">
+       width="400">
 </p>
 
 <h1 align="center">SuperContracts</h1>
