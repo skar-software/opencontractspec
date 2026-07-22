@@ -12,9 +12,7 @@
 
 Open Contract Spec defines how software systems should be called, tested, secured, approved, and executed — in a format humans, tools, and AI agents can understand.
 
-Traditional API specs describe endpoints.
-
-**Open Contract Spec describes execution, policy, and safety.**
+Traditional API specs describe endpoints. **Open Contract Spec describes execution, policy, and safety.**
 
 ---
 
