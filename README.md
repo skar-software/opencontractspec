@@ -64,7 +64,7 @@ Connect SuperContracts to Cursor through MCP so your AI agent can discover contr
 
 Every tool call runs through the same guardrails, approvals, and evidence capture defined in your contract.
 
-### Connect in Cursor
+### Configure SuperContracts MCP in Cursor
 
 1. Open **Cursor Settings → Features → MCP** and click **Add MCP Server**, or add a project-level `.cursor/mcp.json` file.
 2. Download the SuperContracts MCP configuration from [supercontracts.dev](https://supercontracts.dev) using **Add to Cursor**, or paste the config below after starting the local MCP server:
@@ -95,6 +95,9 @@ Every tool call runs through the same guardrails, approvals, and evidence captur
 
 **Typical flow:** `list_contracts` → `get_contract` → `run_contract` → `get_test_run`
 
+Examples:
+TBA
+
 When `generate_ai_context` is enabled on `run_contract`, SuperContracts produces an `ai_context.md` artifact summarizing execution results, policy decisions, failed assertions, and remediation hints — ready for the Cursor agent to reason over on the next turn.
 
 ### Working Demo
@@ -111,22 +114,6 @@ In the demo, Cursor:
 
 ---
 
-## AI Agent Guardrails
-
-Define the systems, tools, data, and actions an AI agent is permitted to access.
-
-These guardrails keep autonomous agents within approved boundaries and prevent unauthorized changes to enterprise systems.
-
-### Example 1
-
-Allow an AI support agent to read Stripe customer and subscription information, but prevent it from issuing refunds.
-
-### Example 2
-
-Allow an AI coding agent to create GitHub branches and pull requests, but prevent it from deploying changes to production.
-
----
-
 ## MCP Guardrails 
 
 Control how AI models interact with Model Context Protocol tools.
@@ -140,6 +127,22 @@ Permit the GitHub MCP server to create branches and pull requests, but block dir
 ### Example 2
 
 Allow the Supabase MCP server to run `SELECT` queries while blocking `DROP TABLE` and unrestricted `DELETE` operations.
+
+---
+
+## AI Agent Guardrails
+
+Define the systems, tools, data, and actions an AI agent is permitted to access.
+
+These guardrails keep autonomous agents within approved boundaries and prevent unauthorized changes to enterprise systems.
+
+### Example 1
+
+Allow an AI support agent to read Stripe customer and subscription information, but prevent it from issuing refunds.
+
+### Example 2
+
+Allow an AI coding agent to create GitHub branches and pull requests, but prevent it from deploying changes to production.
 
 ---
 
@@ -212,20 +215,7 @@ Execute an order-fulfillment workflow that:
 4. Creates the shipment through Shippo.
 5. Updates the order status.
 
-
-## Implementation
-
-Open Contract Spec is being implemented in **SuperContracts from [apilabs.ai](https://apilabs.ai)**.
-
-SuperContracts turns open contracts into executable API, MCP, and AI-agent workflows with runtime guardrails, approvals, testing, and evidence capture. Further, SuperContracts is deeply integrated via MCP in AI IDE tools like Cursor.
-
 Code Samples (TBA)
-
----
-
-## Website
-Developer website with code recipes, playground and demos 
-[supercontracts.dev](https://supercontracts.dev)
 
 ---
 
